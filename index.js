@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const session = require('express-session');
+const passport = require('passport');
 const dotenv = require('dotenv');
 
 dotenv.config();
@@ -15,6 +17,15 @@ app.use(
     credentials: true,
   })
 );
+
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-session-secret',
+  resave: false,
+  saveUninitialized: false,
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
 
 app.get('/', (req, res) => {
   res.json({ status: 'OK', message: 'Expense Tracker API' });
