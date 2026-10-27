@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const Transaction = require('../models/Transaction');
+const Budget = require('../models/Budget');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
@@ -22,11 +23,42 @@ router.get('/summary', auth, async (req, res) => {
 
     const balance = income - expenses;
 
+    // Get active budgets
+    const now = new Date();
+    const budgets = await Budget.find({
+      user: userId,
+      startDate: { $lte: now },
+      endDate: { $gte: now },
+    });
+
+    // Calculate spent amounts for budgets
+    const budgetsWithSpent = await Promise.all(
+      budgets.map(async (budget) => {
+        const spent = await Transaction.find({
+          user: userId,
+          category: budget.category,
+          type: 'expense',
+          date: {
+            $gte: budget.startDate,
+            $lte: budget.endDate,
+          },
+        }).then((txns) => txns.reduce((sum, t) => sum + t.amount, 0));
+
+        return {
+          ...budget.toObject(),
+          spent,
+          remaining: budget.amount - spent,
+          percentage: Math.min(100, (spent / budget.amount) * 100),
+        };
+      })
+    );
+
     return res.json({
       income,
       expenses,
       balance,
       transactions,
+      budgets: budgetsWithSpent,
     });
   } catch (err) {
     return res.status(500).json({ message: 'Server error' });

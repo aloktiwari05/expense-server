@@ -4,6 +4,9 @@ const jwt = require('jsonwebtoken');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const User = require('../models/User');
+const Transaction = require('../models/Transaction');
+const Budget = require('../models/Budget');
+const auth = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -157,6 +160,89 @@ router.get('/me', async (req, res) => {
   }
 });
 
+router.put(
+  '/profile',
+  auth,
+  [
+    body('name').optional().notEmpty().withMessage('Name cannot be empty'),
+    body('email').optional().isEmail().withMessage('Valid email is required'),
+    body('currentPassword').optional(),
+    body('newPassword').optional().isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const userId = req.user.id;
+      const { name, email, currentPassword, newPassword } = req.body;
+
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      // Check if email is being changed and if it's already taken
+      if (email && email !== user.email) {
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+          return res.status(400).json({ message: 'Email already in use' });
+        }
+        user.email = email;
+      }
+
+      // Update name if provided
+      if (name) {
+        user.name = name;
+      }
+
+      // Handle password change
+      if (newPassword) {
+        // For Google OAuth users, they might not have a password
+        if (user.googleId && !user.password) {
+          // Allow setting password for Google users
+          user.password = newPassword;
+        } else {
+          // For regular users, require current password
+          if (!currentPassword) {
+            return res.status(400).json({ message: 'Current password is required to change password' });
+          }
+
+          const isCurrentPasswordValid = await user.comparePassword(currentPassword);
+          if (!isCurrentPasswordValid) {
+            return res.status(400).json({ message: 'Current password is incorrect' });
+          }
+
+          user.password = newPassword;
+        }
+      }
+
+      await user.save();
+
+      // Generate new token if email changed (for security)
+      let token = null;
+      if (email && email !== user.email) {
+        token = generateToken(user);
+      }
+
+      res.json({
+        message: 'Profile updated successfully',
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+        },
+        ...(token && { token }),
+      });
+    } catch (err) {
+      console.error('Profile update error:', err);
+      res.status(500).json({ message: 'Server error' });
+    }
+  }
+);
+
 router.get('/google',
   passport.authenticate('google', { scope: ['profile', 'email'] })
 );
@@ -168,6 +254,32 @@ router.get('/google/callback',
     res.redirect(`http://localhost:5173/login?token=${token}`);
   }
 );
+
+router.delete('/account', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Delete all transactions for this user
+    await Transaction.deleteMany({ user: userId });
+
+    // Delete all budgets for this user
+    await Budget.deleteMany({ user: userId });
+
+    // Delete the user
+    await User.findByIdAndDelete(userId);
+
+    res.json({ message: 'Account deleted successfully' });
+  } catch (err) {
+    console.error('Account deletion error:', err);
+    res.status(500).json({ message: 'Server error during account deletion' });
+  }
+});
 
 module.exports = router;
 
